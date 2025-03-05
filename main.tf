@@ -18,77 +18,62 @@ variable "allowed_ssh_cidr" {
   default = "0.0.0.0/0"
 }
 
-variable "availability_zone" {
-  default = "us-east-1a"
-}
-
-variable "tags" {
-  type = map(string)
-  default = {
-    Environment = "Test"
-    Owner       = "DevOps"
-  }
-}
-
 resource "tls_private_key" "ec2_key" {
   algorithm = "RSA"
   rsa_bits  = 2048
 }
 
-resource "aws_key_pair" "ec2_key_pair" {
+resource "aws_key_pair" "main_key" {
   key_name   = "${var.projeto}-${var.candidato}-key"
   public_key = tls_private_key.ec2_key.public_key_openssh
 }
 
-resource "aws_vpc" "main_vpc" {
+resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_support   = true
   enable_dns_hostnames = true
-  tags = merge(
-    { Name = "${var.projeto}-${var.candidato}-vpc" },
-    var.tags
-  )
+  tags = {
+    Name = "${var.projeto}-vpc"
+  }
 }
 
-resource "aws_subnet" "main_subnet" {
-  vpc_id            = aws_vpc.main_vpc.id
-  cidr_block        = "10.0.1.0/24"
-  availability_zone = var.availability_zone
-  tags = merge(
-    { Name = "${var.projeto}-${var.candidato}-subnet" },
-    var.tags
-  )
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = "us-east-1a"
+  map_public_ip_on_launch = true
+  tags = {
+    Name = "${var.projeto}-public-subnet"
+  }
 }
 
-resource "aws_internet_gateway" "main_igw" {
-  vpc_id = aws_vpc.main_vpc.id
-  tags = merge(
-    { Name = "${var.projeto}-${var.candidato}-igw" },
-    var.tags
-  )
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+  tags = {
+    Name = "${var.projeto}-igw"
+  }
 }
 
-resource "aws_route_table" "main_route_table" {
-  vpc_id = aws_vpc.main_vpc.id
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main_igw.id
+    gateway_id = aws_internet_gateway.igw.id
   }
-  tags = merge(
-    { Name = "${var.projeto}-${var.candidato}-route_table" },
-    var.tags
-  )
+  tags = {
+    Name = "${var.projeto}-public-rt"
+  }
 }
 
-resource "aws_route_table_association" "main_association" {
-  subnet_id      = aws_subnet.main_subnet.id
-  route_table_id = aws_route_table.main_route_table.id
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
 }
 
-resource "aws_security_group" "main_sg" {
-  name        = "${var.projeto}-${var.candidato}-sg"
-  description = "Permitir SSH restrito e tráfego web"
-  vpc_id      = aws_vpc.main_vpc.id
+resource "aws_security_group" "web" {
+  name        = "${var.projeto}-sg"
+  description = "Security Group para instância web"
+  vpc_id      = aws_vpc.main.id
 
   ingress {
     description = "SSH"
@@ -106,14 +91,6 @@ resource "aws_security_group" "main_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    description = "HTTPS"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
   egress {
     from_port   = 0
     to_port     = 0
@@ -121,32 +98,40 @@ resource "aws_security_group" "main_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(
-    { Name = "${var.projeto}-${var.candidato}-sg" },
-    var.tags
-  )
+  tags = {
+    Name = "${var.projeto}-sg"
+  }
 }
 
-data "aws_ami" "debian12" {
+data "aws_ami" "debian" {
   most_recent = true
+  owners      = ["136693071363"]
+
   filter {
     name   = "name"
     values = ["debian-12-amd64-*"]
   }
+
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
   }
-  owners = ["679593333241"]
 }
 
-resource "aws_instance" "debian_ec2" {
-  ami                    = data.aws_ami.debian12.id
+resource "aws_instance" "web" {
+  ami                    = data.aws_ami.debian.id
   instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.main_subnet.id
-  key_name               = aws_key_pair.ec2_key_pair.key_name
-  vpc_security_group_ids = [aws_security_group.main_sg.id]
-  associate_public_ip_address = true
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.web.id]
+  key_name               = aws_key_pair.main_key.key_name
+
+  user_data = <<-EOF
+              #!/bin/bash
+              apt-get update -y
+              apt-get install -y nginx
+              systemctl enable nginx
+              systemctl start nginx
+              EOF
 
   root_block_device {
     volume_size           = 20
@@ -154,25 +139,16 @@ resource "aws_instance" "debian_ec2" {
     delete_on_termination = true
   }
 
-  user_data = <<-EOF
-              #!/bin/bash
-              apt-get update -y
-              apt-get install -y nginx
-              systemctl start nginx
-              systemctl enable nginx
-              EOF
-
-  tags = merge(
-    { Name = "${var.projeto}-${var.candidato}-ec2" },
-    var.tags
-  )
+  tags = {
+    Name = "${var.projeto}-web-server"
+  }
 }
 
-output "private_key" {
+output "instance_ip" {
+  value = aws_instance.web.public_ip
+}
+
+output "ssh_private_key" {
   value       = tls_private_key.ec2_key.private_key_pem
   sensitive   = true
-}
-
-output "ec2_public_ip" {
-  value = aws_instance.debian_ec2.public_ip
 }
