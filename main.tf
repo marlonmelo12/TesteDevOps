@@ -118,7 +118,7 @@ data "aws_ami" "debian" {
   }
 }
 
-resource "aws_instance" "web" {
+resource "aws_instance" "debian_ec2" {
   ami                    = data.aws_ami.debian.id
   instance_type          = "t2.micro"
   subnet_id              = aws_subnet.public.id
@@ -145,7 +145,7 @@ resource "aws_instance" "web" {
 }
 
 output "instance_ip" {
-  value = aws_instance.web.public_ip
+  value = aws_instance.debian_ec2.public_ip
 }
 
 output "ssh_private_key" {
